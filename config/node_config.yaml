@@ -1,0 +1,31 @@
+# Sentinela edge node configuration: identity, camera source and local storage.
+# Relative paths are resolved against the repository root (the parent of this config/ directory).
+
+node:
+  node_id: edge-node-001
+
+camera:
+  camera_id: camera-001
+  # "0" = first USB webcam. Also accepts rtsp://user:pass@host/stream or a recorded video file path.
+  # Keep credentials out of git: prefer SENTINELA_CAMERA_SOURCE or the --source flag for RTSP URLs.
+  source: "0"
+  # Optional capture hints (null = camera default).
+  width: null
+  height: null
+  fps: null
+  # Live sources (webcam / RTSP) are reopened on failure; recorded files stop at end of file.
+  # null = retry forever with exponential backoff (recommended for unattended cameras).
+  reconnect_attempts: null
+  reconnect_delay_s: 2.0
+  reconnect_max_delay_s: 30.0
+  # Network stream timeouts (FFmpeg backend, ignored for USB webcams).
+  open_timeout_ms: 10000
+  read_timeout_ms: 5000
+
+storage:
+  # Root for local evidence and the SQLite event store (Phase 1, upcoming).
+  data_dir: data
+
+monitoring:
+  # Pipeline metrics (latency, throughput, skipped frames, reconnects, peak memory) are logged at this interval.
+  stats_interval_s: 30.0

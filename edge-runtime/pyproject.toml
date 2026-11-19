@@ -1,0 +1,73 @@
+[project]
+name = "sentinela-runtime"
+version = "0.1.0"
+description = "Sentinela Edge Runtime: local-first camera ingestion, inference and event processing."
+requires-python = ">=3.11"
+# Ranges declare compatibility; uv.lock pins every exact version for reproducible installs.
+dependencies = [
+    # Camera ingestion (USB/RTSP/file), preprocessing and the local preview window.
+    "opencv-python>=5.0.0.93,<6",
+    # Frame/tensor math shared by preprocessing and backend postprocessing.
+    "numpy>=2.2,<3",
+    # YAML configuration files in ../config.
+    "pyyaml>=6.0.3,<7",
+]
+
+[project.optional-dependencies]
+# Exactly one ONNX Runtime build per node. Both install the same `onnxruntime` module,
+# so they are declared as conflicting extras below.
+#   uv sync --extra cuda   -> RTX 3060 workstation (CUDA 13, driver >= 580)
+#   uv sync --extra cpu    -> CPU-only / ARM64 portability
+cuda = ["onnxruntime-gpu[cuda,cudnn]>=1.32,<1.33"]
+cpu = ["onnxruntime>=1.32,<1.33"]
+
+[project.scripts]
+sentinela-runtime = "sentinela_runtime.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "mypy==2.4.1",
+    "types-PyYAML==6.0.12.20261113",
+    "ruff==0.17.5",
+]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv]
+conflicts = [[{ extra = "cuda" }, { extra = "cpu" }]]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]
+# importlib mode lets unit/ and integration/ hold same-named modules; ../tests exposes support.py.
+pythonpath = ["../tests"]
+addopts = "--import-mode=importlib --cov=sentinela_runtime --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    "model: needs model weights present under ../models (skipped otherwise)",
+]
+
+[tool.coverage.run]
+source = ["sentinela_runtime"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sentinela_runtime"]
+known-local-folder = ["support"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["cv2", "cv2.*", "onnxruntime", "onnxruntime.*"]
+ignore_missing_imports = true

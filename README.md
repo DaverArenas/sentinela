@@ -521,6 +521,36 @@ uv sync
 
 Avoid unmanaged global Python dependencies.
 
+## 8.1 Running the Edge Runtime (Phase 1)
+
+All commands run from `edge-runtime/`. Configuration is read from the repository `config/` directory.
+
+```bash
+cd edge-runtime
+
+# Install (pick exactly one ONNX Runtime build)
+uv sync --extra cuda        # NVIDIA GPU: onnxruntime-gpu, CUDA 13 (driver >= 580)
+uv sync --extra cpu         # CPU-only / portability
+
+# One-time model download (see models/README.md for provenance and checksum)
+curl -L -o ../models/yolox_s.onnx \
+  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+
+# Run Sentinela Vision
+uv run sentinela-runtime                                   # camera from config/node_config.yaml
+uv run sentinela-runtime --source ../path/to/recording.mp4 # recorded video
+uv run sentinela-runtime --source rtsp://camera/stream --no-preview --device cuda
+
+# Quality gates
+uv run pytest               # unit + integration tests, coverage gate >= 80%
+uv run ruff check src ../tests && uv run ruff format --check src ../tests
+uv run mypy                 # strict type checking
+```
+
+- RTSP credentials belong in `SENTINELA_CAMERA_SOURCE`, not in YAML.
+- Events are appended to `logs/events.jsonl`; runtime logs (JSON) go to `logs/runtime.jsonl`.
+- If CUDA is unavailable, the runtime falls back to CPU and records `onnxruntime-cpu` in each event's provenance.
+
 ---
 
 # 9. Repository Structure

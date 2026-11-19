@@ -1,0 +1,73 @@
+"""Pipeline metrics and the local preview window."""
+
+from __future__ import annotations
+
+import cv2
+import numpy as np
+import pytest
+
+from sentinela_runtime.monitoring.metrics import PipelineMetrics, peak_rss_mib
+from sentinela_runtime.vision import visualization as viz
+from sentinela_runtime.vision.inference.base import Detection
+
+from support import PERSON
+
+
+def test_metrics_snapshot_aggregates_counters_and_latency() -> None:
+    now = [0.0]
+    metrics = PipelineMetrics(clock=lambda: now[0])
+    for latency in (10.0, 20.0, 30.0):
+        metrics.record_inference(latency, events=1)
+    metrics.record_skip()
+    metrics.record_error()
+    now[0] = 2.5
+
+    snap = metrics.snapshot(reconnects=2)
+
+    assert (snap.frames_read, snap.frames_inferred, snap.frames_skipped) == (5, 3, 1)
+    assert (snap.inference_errors, snap.events, snap.reconnects) == (1, 3, 2)
+    assert snap.throughput_fps == 2.0
+    assert snap.latency_mean_ms == 20.0
+    assert snap.latency_p95_ms == pytest.approx(29.0)
+    assert snap.peak_rss_mib > 0
+
+
+def test_metrics_without_inference_report_no_latency() -> None:
+    snap = PipelineMetrics().snapshot()
+
+    assert snap.latency_mean_ms is None and snap.latency_p95_ms is None
+    assert peak_rss_mib() > 0
+
+
+def test_annotate_frame_draws_on_a_copy_with_target_colors() -> None:
+    frame = np.zeros((80, 120, 3), dtype=np.uint8)
+    dog = Detection(16, "dog", 0.7, (60.0, 30.0, 110.0, 70.0))
+
+    out = viz.annotate_frame(frame, [PERSON, dog], {"person"}, fps=12.3)
+
+    assert not frame.any()
+    assert tuple(out[60, 25]) == viz.COLOR_TARGET  # bottom edge of the person box
+    assert tuple(out[70, 85]) == viz.COLOR_OTHER  # bottom edge of the dog box
+
+
+def test_show_frame_degrades_to_headless_without_gui(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_gui(*_: object) -> None:
+        raise cv2.error("no display")
+
+    monkeypatch.setattr(viz.cv2, "imshow", no_gui)
+    monkeypatch.setattr(viz.cv2, "destroyAllWindows", no_gui)
+
+    assert viz.show_frame("w", np.zeros((2, 2, 3), np.uint8)) == (False, False)
+    viz.close_windows()  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("key", "quit_requested"), [(ord("q"), True), (27, True), (ord("x"), False), (-1, False)]
+)
+def test_show_frame_reports_quit_keys(
+    monkeypatch: pytest.MonkeyPatch, key: int, quit_requested: bool
+) -> None:
+    monkeypatch.setattr(viz.cv2, "imshow", lambda *_: None)
+    monkeypatch.setattr(viz.cv2, "waitKey", lambda *_: key)
+
+    assert viz.show_frame("w", np.zeros((2, 2, 3), np.uint8)) == (True, quit_requested)

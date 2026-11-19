@@ -1,0 +1,37 @@
+# Sentinela Vision configuration: model, inference backend, sampling and event rules.
+# Relative paths are resolved against the repository root.
+
+model:
+  # Provenance is copied into every event's `processing` block. See models/README.md.
+  model_id: yolox-s-coco
+  family: yolox                 # selects the model adapter (pre/post-processing)
+  version: "0.1.1rc0"
+  format: onnx
+  path: models/yolox_s.onnx
+  # The runtime refuses to start if the file on disk does not match this hash,
+  # so a model can never be swapped silently. Set to null only while experimenting.
+  sha256: c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063
+  source: https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+  license: Apache-2.0 (code); weights/dataset commercial review pending
+  input_size: [640, 640]        # height, width
+
+inference:
+  backend: onnxruntime
+  device: auto                  # auto | cuda | cpu  (auto/cuda fall back to CPU with a warning)
+  confidence_threshold: 0.5
+  nms_iou_threshold: 0.45
+
+sampling:
+  # Run inference on every Nth captured frame (1 = every frame). Frames in between are
+  # still read so live streams never build up latency.
+  inference_stride: 1
+
+events:
+  # Detections of these classes produce `object_detected` events.
+  target_classes: [person]
+  # Minimum seconds between two events for the same class on the same camera.
+  cooldown_s: 5.0
+
+preview:
+  enabled: true                 # set false on headless nodes
+  window_name: Sentinela Vision

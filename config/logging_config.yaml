@@ -1,0 +1,49 @@
+# Python logging.config.dictConfig schema (version 1).
+# Relative `filename` paths are resolved against the repository root; parent directories are created.
+
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  console:
+    format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+  json:
+    (): sentinela_runtime.core.log.JsonFormatter
+  event:
+    # Event records are already JSON documents: write them verbatim, one per line.
+    format: "%(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    stream: ext://sys.stderr
+    formatter: console
+  runtime_file:
+    class: logging.handlers.RotatingFileHandler
+    filename: logs/runtime.jsonl
+    maxBytes: 5242880
+    backupCount: 3
+    encoding: utf-8
+    formatter: json
+  event_file:
+    class: logging.handlers.RotatingFileHandler
+    filename: logs/events.jsonl
+    maxBytes: 5242880
+    backupCount: 5
+    encoding: utf-8
+    formatter: event
+
+loggers:
+  sentinela:
+    level: INFO
+    handlers: [console, runtime_file]
+    propagate: false
+  # Structured event stream (consumed by local tooling until SQLite persistence lands).
+  sentinela.events:
+    level: INFO
+    handlers: [event_file]
+    propagate: true
+
+root:
+  level: WARNING
+  handlers: [console]

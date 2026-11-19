@@ -1,8 +1,10 @@
-"""Sentinela Vision pipeline: frame source -> inference -> event engine (-> preview).
+"""Sentinela Vision pipeline.
+
+frame source -> inference -> tracking -> zone evaluation -> event engine (-> preview)
 
 Every stage is injected through an interface, so the same pipeline runs against a live
-camera, an RTSP stream or a recorded video fixture, with any inference backend.
-Tracking and zone evaluation slot in between inference and the event engine.
+camera, an RTSP stream or a recorded video fixture, with any inference backend or tracker.
+Frames are pulled synchronously one at a time: there is no frame queue to grow unbounded.
 """
 
 from __future__ import annotations
@@ -21,7 +23,9 @@ from sentinela_runtime.events.event_engine import EventEngine
 from sentinela_runtime.monitoring.metrics import MetricsSnapshot, PipelineMetrics
 from sentinela_runtime.vision.camera.video_source import CapturedFrame
 from sentinela_runtime.vision.inference.base import Detection, InferenceBackend, InferenceError
+from sentinela_runtime.vision.tracking.base import Tracker, TrackingResult
 from sentinela_runtime.vision.visualization import annotate_frame, close_windows, show_frame
+from sentinela_runtime.vision.zones.zone_evaluator import ZoneEvaluator
 
 log = get_logger("pipeline")
 
@@ -37,7 +41,6 @@ class PipelineError(RuntimeError):
 @dataclass(frozen=True)
 class PipelineSettings:
     inference_stride: int
-    target_classes: tuple[str, ...]
     preview: PreviewConfig
     stats_interval_s: float
 
@@ -45,7 +48,6 @@ class PipelineSettings:
     def from_config(cls, config: RuntimeConfig) -> PipelineSettings:
         return cls(
             inference_stride=config.vision.sampling.inference_stride,
-            target_classes=config.vision.events.target_classes,
             preview=config.vision.preview,
             stats_interval_s=config.node.monitoring.stats_interval_s,
         )
@@ -56,6 +58,8 @@ class VisionPipeline:
         self,
         source: FrameSource,
         backend: InferenceBackend,
+        tracker: Tracker,
+        zones: ZoneEvaluator,
         engine: EventEngine,
         settings: PipelineSettings,
         stop_event: threading.Event | None = None,
@@ -64,6 +68,8 @@ class VisionPipeline:
     ) -> None:
         self._source = source
         self._backend = backend
+        self._tracker = tracker
+        self._zones = zones
         self._engine = engine
         self._settings = settings
         self._stop = stop_event or threading.Event()
@@ -72,6 +78,7 @@ class VisionPipeline:
         self._metrics = PipelineMetrics()
         self._preview_active = settings.preview.enabled
         self._last_detections: tuple[Detection, ...] = ()
+        self._last_tracking = TrackingResult()
         self._consecutive_errors = 0
         self._fps: float | None = None
         self._last_stats = clock()
@@ -107,9 +114,14 @@ class VisionPipeline:
             return
         latency_s = time.perf_counter() - started
         self._consecutive_errors = 0
-        events = self._engine.process(detections, frame.index, frame.captured_at)
+
+        tracking = self._tracker.update(detections)
+        transitions = self._zones.update(tracking, (frame.image.shape[0], frame.image.shape[1]))
+        events = self._engine.process(frame, tracking, transitions)
+
         self._metrics.record_inference(latency_s * 1000, len(events))
         self._last_detections = detections
+        self._last_tracking = tracking
         instant = 1.0 / max(latency_s, 1e-6)
         self._fps = (
             instant if self._fps is None else FPS_SMOOTHING * self._fps + (1 - FPS_SMOOTHING) * instant
@@ -126,7 +138,12 @@ class VisionPipeline:
         if not self._preview_active:
             return True
         annotated = annotate_frame(
-            frame.image, self._last_detections, self._settings.target_classes, self._fps
+            frame.image,
+            detections=self._last_detections,
+            tracks=self._last_tracking.tracks,
+            zones=self._zones.zones,
+            occupancy=self._zones.occupancy(),
+            fps=self._fps,
         )
         self._preview_active, quit_requested = self._display(self._settings.preview.window_name, annotated)
         if quit_requested:

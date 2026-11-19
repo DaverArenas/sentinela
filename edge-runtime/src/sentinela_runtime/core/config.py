@@ -1,8 +1,8 @@
 """Typed, validated configuration loaded from the repository ``config/`` directory.
 
 Files (all YAML):
-    node_config.yaml     node identity, camera source, storage, monitoring
-    vision_config.yaml   model provenance, inference backend, sampling, event rules, preview
+    node_config.yaml     node identity, camera source, storage, monitoring, polygon zones
+    vision_config.yaml   model provenance, inference backend, sampling, tracking, event rules, preview
     logging_config.yaml  ``logging.config.dictConfig`` schema (consumed by ``core.log``)
 
 Every config object is a frozen dataclass; derive changes with :func:`dataclasses.replace`.
@@ -23,6 +23,8 @@ from typing import Any, TypeVar
 
 import yaml
 
+from sentinela_runtime.vision.zones.geometry import ANCHORS, is_simple_polygon, polygon_area
+
 CONFIG_DIR_ENV = "SENTINELA_CONFIG_DIR"
 CAMERA_SOURCE_ENV = "SENTINELA_CAMERA_SOURCE"
 NODE_CONFIG_FILE = "node_config.yaml"
@@ -30,7 +32,13 @@ VISION_CONFIG_FILE = "vision_config.yaml"
 LOGGING_CONFIG_FILE = "logging_config.yaml"
 
 VALID_DEVICES = frozenset({"auto", "cuda", "cpu"})
+# Kept in sync with the tracker registry and EventType by unit tests.
+VALID_TRACKERS = frozenset({"iou"})
+EVENT_TYPE_NAMES = frozenset({"object_detected", "zone_entry", "zone_exit"})
 CONFIG_HASH_LENGTH = 16
+MIN_ZONE_AREA = 1e-4  # normalised units: 0.01% of the frame
+MIN_POLYGON_VERTICES = 3
+MAX_JPEG_QUALITY = 100
 
 T = TypeVar("T")
 
@@ -64,8 +72,30 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class SnapshotConfig:
+    enabled: bool = True
+    # Event types that store a JPEG of the triggering frame as evidence.
+    event_types: tuple[str, ...] = ("zone_entry",)
+    jpeg_quality: int = 85
+    # Snapshots are skipped (event still stored) when free disk space drops below this.
+    min_free_disk_mb: int = 500
+
+
+@dataclass(frozen=True)
 class StorageConfig:
     data_dir: str = "data"
+    database_file: str = "sentinela.db"  # relative to data_dir
+    snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
+
+
+@dataclass(frozen=True)
+class ZoneConfig:
+    zone_id: str
+    name: str
+    # Ordered [x, y] vertices normalised to [0, 1] of frame width / height.
+    polygon: tuple[tuple[float, float], ...]
+    classes: tuple[str, ...] = ("person",)
+    anchor: str = "bottom_center"  # bottom_center (feet) | center
 
 
 @dataclass(frozen=True)
@@ -80,6 +110,7 @@ class NodeConfig:
     camera: CameraConfig
     storage: StorageConfig = field(default_factory=StorageConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    zones: tuple[ZoneConfig, ...] = ()
 
 
 # --- vision_config.yaml ------------------------------------------------------------
@@ -112,9 +143,20 @@ class SamplingConfig:
 
 
 @dataclass(frozen=True)
+class TrackingConfig:
+    tracker: str = "iou"
+    iou_threshold: float = 0.3
+    min_hits: int = 3  # consecutive matches before a track is confirmed and gets an ID
+    max_lost_frames: int = 15  # inferred frames a confirmed track survives without a match
+
+
+@dataclass(frozen=True)
 class EventsConfig:
-    target_classes: tuple[str, ...] = ("person",)
-    cooldown_s: float = 5.0
+    # One object_detected event per newly confirmed track of these classes (empty = disabled).
+    detection_event_classes: tuple[str, ...] = ()
+    # Consecutive inferred frames inside / outside a zone before zone_entry / zone_exit fires.
+    zone_entry_frames: int = 3
+    zone_exit_frames: int = 5
 
 
 @dataclass(frozen=True)
@@ -128,6 +170,7 @@ class VisionConfig:
     model: ModelConfig
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     preview: PreviewConfig = field(default_factory=PreviewConfig)
 
@@ -150,6 +193,14 @@ class RuntimeConfig:
         """Resolve a config-relative path against the repository root."""
         candidate = Path(path).expanduser()
         return candidate if candidate.is_absolute() else self.base_dir / candidate
+
+    @property
+    def data_dir(self) -> Path:
+        return self.resolve_path(self.node.storage.data_dir)
+
+    @property
+    def database_path(self) -> Path:
+        return self.data_dir / self.node.storage.database_file
 
     def fingerprint(self) -> str:
         """Short, stable hash of the effective configuration (event provenance)."""
@@ -220,17 +271,25 @@ def build_config(cls: type[T], data: Mapping[str, Any], section: str = "") -> T:
         if is_dataclass(hint):
             kwargs[f.name] = build_config(hint, data.get(f.name) or {}, qualified)  # type: ignore[arg-type]
         elif f.name in data:
-            kwargs[f.name] = _coerce(hint, data[f.name])
+            kwargs[f.name] = _coerce(hint, data[f.name], qualified)
         elif f.default is MISSING and f.default_factory is MISSING:
             raise ConfigError(f"Missing required config key: {qualified}")
     return cls(**kwargs)
 
 
-def _coerce(hint: Any, value: Any) -> Any:
-    """Turn YAML lists into tuples for tuple-typed fields; leave everything else as-is."""
-    if typing.get_origin(hint) is tuple and isinstance(value, list):
-        return tuple(value)
-    return value
+def _coerce(hint: Any, value: Any, section: str) -> Any:
+    """Turn YAML lists into (nested) tuples and mappings into dataclasses; validation checks the rest."""
+    if isinstance(hint, type) and is_dataclass(hint):
+        return build_config(hint, value, section)
+    if typing.get_origin(hint) is not tuple or not isinstance(value, list):
+        return value
+    args = typing.get_args(hint)
+    if len(args) == 2 and args[1] is Ellipsis:
+        return tuple(_coerce(args[0], item, f"{section}[{i}]") for i, item in enumerate(value))
+    if len(args) == len(value):
+        pairs = enumerate(zip(args, value, strict=True))
+        return tuple(_coerce(arg, item, f"{section}[{i}]") for i, (arg, item) in pairs)
+    return tuple(value)  # wrong arity: reported by validation
 
 
 def apply_overrides(
@@ -281,9 +340,72 @@ def _node_errors(node: NodeConfig) -> list[str]:
         (_positive_int(cam.open_timeout_ms), "camera.open_timeout_ms must be a positive integer"),
         (_positive_int(cam.read_timeout_ms), "camera.read_timeout_ms must be a positive integer"),
         (_non_empty(node.storage.data_dir), "storage.data_dir must be a non-empty string"),
+        (_non_empty(node.storage.database_file), "storage.database_file must be a non-empty string"),
         (_positive_number(node.monitoring.stats_interval_s), "monitoring.stats_interval_s must be > 0"),
     ]
+    errors = [message for ok, message in checks if not ok]
+    return [*errors, *_snapshot_errors(node.storage.snapshots), *_zone_errors(node.zones)]
+
+
+def _snapshot_errors(snapshots: SnapshotConfig) -> list[str]:
+    checks = [
+        (isinstance(snapshots.enabled, bool), "storage.snapshots.enabled must be a boolean"),
+        (
+            _string_tuple(snapshots.event_types)
+            and all(t in EVENT_TYPE_NAMES for t in snapshots.event_types),
+            f"storage.snapshots.event_types must be a list drawn from {sorted(EVENT_TYPE_NAMES)}",
+        ),
+        (
+            _positive_int(snapshots.jpeg_quality) and snapshots.jpeg_quality <= MAX_JPEG_QUALITY,
+            "storage.snapshots.jpeg_quality must be an integer in [1, 100]",
+        ),
+        (
+            _is_int(snapshots.min_free_disk_mb) and snapshots.min_free_disk_mb >= 0,
+            "storage.snapshots.min_free_disk_mb must be an integer >= 0",
+        ),
+    ]
     return [message for ok, message in checks if not ok]
+
+
+def _zone_errors(zones: Any) -> list[str]:
+    if not isinstance(zones, tuple):
+        return ["zones must be a list (use [] for no zones)"]
+    errors: list[str] = []
+    ids = [zone.zone_id for zone in zones]
+    duplicates = sorted({zone_id for zone_id in ids if ids.count(zone_id) > 1})
+    if duplicates:
+        errors.append(f"zones: duplicate zone_id(s) {duplicates}")
+    for index, zone in enumerate(zones):
+        where = f"zones[{index}] ({zone.zone_id!r})"
+        checks = [
+            (_non_empty(zone.zone_id) and _non_empty(zone.name), f"{where}: zone_id and name are required"),
+            (
+                _string_tuple(zone.classes) and len(zone.classes) > 0,
+                f"{where}: classes must be a non-empty list of class names",
+            ),
+            (zone.anchor in ANCHORS, f"{where}: anchor must be one of {sorted(ANCHORS)}"),
+        ]
+        errors.extend(message for ok, message in checks if not ok)
+        errors.extend(f"{where}: {problem}" for problem in _polygon_problems(zone.polygon))
+    return errors
+
+
+def _polygon_problems(polygon: Any) -> list[str]:
+    valid_vertices = isinstance(polygon, tuple) and all(
+        isinstance(v, tuple) and len(v) == 2 and all(_is_number(c) and 0.0 <= c <= 1.0 for c in v)
+        for v in polygon
+    )
+    if not valid_vertices:
+        return ["polygon must be a list of [x, y] pairs normalised to [0, 1]"]
+    if len(polygon) < MIN_POLYGON_VERTICES:
+        return [f"polygon needs at least {MIN_POLYGON_VERTICES} vertices"]
+    if any(polygon[i] == polygon[i - 1] for i in range(len(polygon))):
+        return ["polygon repeats a vertex consecutively; remove the duplicate"]
+    if not is_simple_polygon(polygon):
+        return ["polygon edges cross each other; list vertices in boundary order"]
+    if polygon_area(polygon) < MIN_ZONE_AREA:
+        return ["polygon area is (nearly) zero"]
+    return []
 
 
 def _vision_errors(vision: VisionConfig) -> list[str]:
@@ -313,12 +435,21 @@ def _vision_errors(vision: VisionConfig) -> list[str]:
             "sampling.inference_stride must be an integer >= 1",
         ),
         (
-            isinstance(vision.events.target_classes, tuple)
-            and len(vision.events.target_classes) > 0
-            and all(_non_empty(c) for c in vision.events.target_classes),
-            "events.target_classes must be a non-empty list of class names",
+            vision.tracking.tracker in VALID_TRACKERS,
+            f"tracking.tracker must be one of {sorted(VALID_TRACKERS)}",
         ),
-        (_non_negative_number(vision.events.cooldown_s), "events.cooldown_s must be >= 0"),
+        (_unit_interval(vision.tracking.iou_threshold), "tracking.iou_threshold must be in (0, 1]"),
+        (_positive_int(vision.tracking.min_hits), "tracking.min_hits must be an integer >= 1"),
+        (
+            _is_int(vision.tracking.max_lost_frames) and vision.tracking.max_lost_frames >= 0,
+            "tracking.max_lost_frames must be an integer >= 0",
+        ),
+        (
+            _string_tuple(vision.events.detection_event_classes),
+            "events.detection_event_classes must be a list of class names ([] disables)",
+        ),
+        (_positive_int(vision.events.zone_entry_frames), "events.zone_entry_frames must be an integer >= 1"),
+        (_positive_int(vision.events.zone_exit_frames), "events.zone_exit_frames must be an integer >= 1"),
         (isinstance(vision.preview.enabled, bool), "preview.enabled must be a boolean"),
     ]
     return [message for ok, message in checks if not ok]
@@ -354,6 +485,10 @@ def _unit_interval(value: Any) -> bool:
 
 def _non_empty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _string_tuple(value: Any) -> bool:
+    return isinstance(value, tuple) and all(_non_empty(v) for v in value)
 
 
 def _is_sha256(value: Any) -> bool:

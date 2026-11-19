@@ -26,11 +26,19 @@ sampling:
   # still read so live streams never build up latency.
   inference_stride: 1
 
+tracking:
+  tracker: iou                  # selects the tracker adapter
+  iou_threshold: 0.3            # minimum overlap to associate a detection with a track
+  min_hits: 3                   # consecutive matches before a track is confirmed and gets an ID
+  max_lost_frames: 15           # inferred frames a track survives unseen (short occlusions keep the ID)
+
 events:
-  # Detections of these classes produce `object_detected` events.
-  target_classes: [person]
-  # Minimum seconds between two events for the same class on the same camera.
-  cooldown_s: 5.0
+  # Zone events: a track must be inside / outside a zone for this many consecutive inferred
+  # frames before zone_entry / zone_exit fires (debounces people standing on a zone edge).
+  zone_entry_frames: 3
+  zone_exit_frames: 5
+  # Optional: one object_detected event per newly confirmed track of these classes ([] = off).
+  detection_event_classes: []
 
 preview:
   enabled: true                 # set false on headless nodes

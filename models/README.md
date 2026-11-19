@@ -46,4 +46,5 @@ sha256sum models/yolox_s.onnx   # must match the SHA-256 above
 1. Add a provenance record above.
 2. Update `model:` in `config/vision_config.yaml` (id, version, path, sha256, source, license).
 3. Add an adapter under `vision/inference/backends/` if the model family is new.
-4. Re-run the recorded-video tests and the RTX 3060 benchmark.
+4. Re-run the recorded-video tests and the RTX 3060 benchmark (`uv run sentinela-benchmark --device cuda`),
+   and record the results in `applications/sentinela_vision/README.md`.

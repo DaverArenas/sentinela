@@ -11,6 +11,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Protocol, Self
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from sentinela_runtime.events.schemas import Event
     from sentinela_runtime.vision.camera.video_source import CapturedFrame
 
@@ -29,6 +31,14 @@ class FrameSource(Protocol):
 
 
 class EventSink(Protocol):
-    """Destination for structured events (log stream now; SQLite / MQTT later)."""
+    """Destination for structured events (SQLite store, JSONL log; MQTT in a later phase)."""
 
     def publish(self, event: Event) -> None: ...
+
+
+class EvidenceRecorder(Protocol):
+    """Stores evidence (e.g. a snapshot) for an event before it is published."""
+
+    def capture(self, event: Event, image: np.ndarray) -> str | None:
+        """Return the stored evidence path (relative to the data dir), or None if nothing was stored."""
+        ...

@@ -23,9 +23,29 @@ camera:
   read_timeout_ms: 5000
 
 storage:
-  # Root for local evidence and the SQLite event store (Phase 1, upcoming).
+  # Local event store and evidence. Never committed (git-ignored); stays on the edge node.
   data_dir: data
+  database_file: sentinela.db     # SQLite event store, relative to data_dir
+  snapshots:
+    enabled: true
+    # Event types that save the triggering frame as JPEG evidence (data/snapshots/<date>/<event_id>.jpg).
+    event_types: [zone_entry]
+    jpeg_quality: 85
+    # Below this free space (MiB) snapshots are skipped; events are still stored.
+    min_free_disk_mb: 500
 
 monitoring:
   # Pipeline metrics (latency, throughput, skipped frames, reconnects, peak memory) are logged at this interval.
   stats_interval_s: 30.0
+
+# Polygon zones evaluated on this node's camera. Vertices are [x, y] normalised to 0..1 of
+# the frame width/height (top-left = [0, 0]), listed in boundary order (3+ vertices).
+# Membership uses the object's anchor point: bottom_center (feet, for floor areas) or center.
+# Use `zones: []` to disable zone events.
+zones:
+  - zone_id: zone-001
+    name: Restricted Area
+    classes: [person]
+    anchor: bottom_center
+    # Example: right half of the frame. Adjust to the real restricted area for each camera.
+    polygon: [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]]

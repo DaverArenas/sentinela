@@ -141,6 +141,23 @@ def test_unlimited_reconnect_ends_quietly_when_stop_is_requested() -> None:
     assert len(stop.delays) == 4
 
 
+def test_read_failure_during_shutdown_does_not_reconnect() -> None:
+    """Ctrl+C interrupts the blocking read: that is a shutdown, not a lost camera."""
+    stop = RecordingStop()
+
+    class InterruptedCapture(FakeCapture):
+        def read(self) -> tuple[bool, np.ndarray | None]:
+            stop.set()
+            return False, None
+
+    factory = CaptureFactory([InterruptedCapture([])])
+
+    with source(CAMERA, factory, stop) as src:
+        assert list(src.frames()) == []
+
+    assert stop.delays == [] and src.reconnect_count == 0
+
+
 def test_frames_stop_immediately_when_stop_already_set() -> None:
     stop = threading.Event()
     stop.set()

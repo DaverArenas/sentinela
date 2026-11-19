@@ -1,5 +1,5 @@
-"""Local persistence (Phase 1, upcoming deliverable).
+"""Local persistence: SQLite event repository and evidence snapshots.
 
-Will provide a SQLite event repository and local evidence (snapshot) storage implementing
-the ``EventSink`` protocol, so events are persisted before any optional upstream sync.
+Events are persisted on the node before any optional upstream sync (future phases), and
+neither component needs network access.
 """

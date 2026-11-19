@@ -23,6 +23,7 @@ cpu = ["onnxruntime>=1.32,<1.33"]
 
 [project.scripts]
 sentinela-runtime = "sentinela_runtime.main:main"
+sentinela-benchmark = "sentinela_runtime.monitoring.benchmark:main"
 
 [dependency-groups]
 dev = [

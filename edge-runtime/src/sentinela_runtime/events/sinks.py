@@ -1,8 +1,9 @@
-"""Event sinks available in the current phase.
+"""Log-stream event sink.
 
 ``LoggingEventSink`` writes each event as one JSON line to the ``sentinela.events`` logger,
-which ``config/logging_config.yaml`` routes to ``logs/events.jsonl``. The SQLite repository
-(``storage``) will implement the same ``EventSink`` protocol.
+which ``config/logging_config.yaml`` routes to ``logs/events.jsonl`` (a convenient live tail).
+The durable record is the SQLite store (``storage.sqlite_store``), which implements the
+same ``EventSink`` protocol.
 """
 
 from __future__ import annotations

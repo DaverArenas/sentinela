@@ -1,37 +1,42 @@
-"""Deterministic event rules. Pure functions: state goes in, new state comes out."""
+"""Deterministic event rules: tracked objects and zone transitions in, event candidates out.
+
+Deduplication comes from tracking and zone debouncing rather than timers: a track produces
+at most one ``object_detected`` (when it is confirmed) and one ``zone_entry`` per visit to a
+zone, followed by one ``zone_exit``. Pure functions; no state is kept here.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 
-from sentinela_runtime.vision.inference.base import Detection
+from sentinela_runtime.events.schemas import EventType
+from sentinela_runtime.vision.tracking.base import TrackedObject, TrackingResult
+from sentinela_runtime.vision.zones.zone_evaluator import TransitionKind, Zone, ZoneTransition
+
+TRANSITION_EVENT_TYPES = {
+    TransitionKind.ENTRY: EventType.ZONE_ENTRY,
+    TransitionKind.EXIT: EventType.ZONE_EXIT,
+}
 
 
-def select_detection_events(
-    detections: Sequence[Detection],
-    target_classes: Collection[str],
-    last_emitted: Mapping[str, float],
-    now: float,
-    cooldown_s: float,
-) -> tuple[tuple[Detection, ...], Mapping[str, float]]:
-    """Choose detections that should become ``object_detected`` events.
+@dataclass(frozen=True)
+class EventCandidate:
+    event_type: EventType
+    obj: TrackedObject
+    zone: Zone | None = None
 
-    At most one event per target class (its highest-confidence detection) and at most one
-    per ``cooldown_s`` seconds, which prevents per-frame duplicates. Returns the detections
-    to emit and a *new* cooldown map; ``last_emitted`` is never modified.
-    """
-    best: dict[str, Detection] = {}
-    for detection in detections:
-        if detection.class_name not in target_classes:
-            continue
-        current = best.get(detection.class_name)
-        if current is None or detection.confidence > current.confidence:
-            best[detection.class_name] = detection
 
-    due = tuple(
-        det
-        for name, det in best.items()
-        if name not in last_emitted or now - last_emitted[name] >= cooldown_s
+def select_events(
+    tracking: TrackingResult,
+    transitions: Sequence[ZoneTransition],
+    detection_event_classes: Collection[str],
+) -> tuple[EventCandidate, ...]:
+    """New tracks of the configured classes, then zone transitions, in a stable order."""
+    detected = (
+        EventCandidate(EventType.OBJECT_DETECTED, obj)
+        for obj in tracking.started
+        if obj.class_name in detection_event_classes
     )
-    updated = {**last_emitted, **{det.class_name: now for det in due}}
-    return due, updated
+    zoned = (EventCandidate(TRANSITION_EVENT_TYPES[t.kind], t.obj, t.zone) for t in transitions)
+    return (*detected, *zoned)

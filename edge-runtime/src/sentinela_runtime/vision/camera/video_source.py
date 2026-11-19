@@ -125,6 +125,8 @@ class VideoSource:
             if not self.is_live:
                 log.info("End of recorded source", extra={"camera_id": self._config.camera_id})
                 return
+            if self._stop.is_set():
+                return  # read interrupted by shutdown: not a camera failure
             if not self._reconnect():
                 if self._stop.is_set():
                     return

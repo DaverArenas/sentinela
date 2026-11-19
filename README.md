@@ -541,15 +541,25 @@ uv run sentinela-runtime                                   # camera from config/
 uv run sentinela-runtime --source ../path/to/recording.mp4 # recorded video
 uv run sentinela-runtime --source rtsp://camera/stream --no-preview --device cuda
 
+# Inspect stored events (Python's built-in SQLite shell)
+uv run python -m sqlite3 ../data/sentinela.db \
+  "SELECT timestamp, event_type, track_id, zone_id, snapshot_path FROM events ORDER BY timestamp"
+
+# Inference benchmark (model + backend + device from config; camera I/O excluded)
+uv run sentinela-benchmark --device cuda --output ../logs/benchmark-cuda.json
+
 # Quality gates
 uv run pytest               # unit + integration tests, coverage gate >= 80%
 uv run ruff check src ../tests && uv run ruff format --check src ../tests
 uv run mypy                 # strict type checking
 ```
 
+- Zones are polygons in `config/node_config.yaml` (`zones:`), with `[x, y]` vertices normalised to 0..1 of the frame. The preview draws them (yellow when empty, red when occupied) together with track IDs.
+- Tracking (`tracking:`) and zone entry/exit debouncing (`events:`) are tuned in `config/vision_config.yaml`.
+- Every event is stored in SQLite at `data/sentinela.db` first, then appended to `logs/events.jsonl`. `zone_entry` events also save the triggering frame to `data/snapshots/<date>/<event_id>.jpg`. `data/` and `logs/` stay on the node and are git-ignored.
 - RTSP credentials belong in `SENTINELA_CAMERA_SOURCE`, not in YAML.
-- Events are appended to `logs/events.jsonl`; runtime logs (JSON) go to `logs/runtime.jsonl`.
 - If CUDA is unavailable, the runtime falls back to CPU and records `onnxruntime-cpu` in each event's provenance.
+- Exit codes: `0` ok, `1` camera, `2` configuration, `3` model, `4` inference, `5` event storage.
 
 ---
 

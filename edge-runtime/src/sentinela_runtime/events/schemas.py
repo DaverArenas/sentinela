@@ -22,6 +22,8 @@ CONFIDENCE_DECIMALS = 4
 
 class EventType(StrEnum):
     OBJECT_DETECTED = "object_detected"
+    ZONE_ENTRY = "zone_entry"
+    ZONE_EXIT = "zone_exit"
 
 
 def new_event_id() -> str:
@@ -52,7 +54,7 @@ class ObjectInfo:
     class_id: int
     confidence: float
     bounding_box: BoundingBox
-    track_id: str | None = None  # populated once tracking lands
+    track_id: str | None = None  # tracker ID, e.g. "track-42" (unique within one runtime session)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,7 +77,7 @@ class ZoneInfo:
 
 @dataclass(frozen=True)
 class EvidenceInfo:
-    snapshot_path: str | None = None
+    snapshot_path: str | None = None  # relative to storage.data_dir
 
     def to_dict(self) -> dict[str, str | None]:
         return {"snapshot_path": self.snapshot_path}

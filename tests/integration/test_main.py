@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -13,13 +14,13 @@ from sentinela_runtime import main as main_module
 from sentinela_runtime.vision.inference.base import InferenceError
 from sentinela_runtime.vision.pipeline import PipelineError
 
-from support import PERSON, REPO_MODEL, FakeBackend
+from support import REPO_MODEL, FakeBackend, walker, write_video
 
 
 def headless(video: Path, **vision: Any) -> dict[str, Any]:
     return {
         "node": {"camera": {"source": str(video), "reconnect_attempts": 0}},
-        "vision": {"preview": {"enabled": False}, **vision},
+        "vision": {"preview": {"enabled": False}, "tracking": {"max_lost_frames": 5}, **vision},
     }
 
 
@@ -30,22 +31,61 @@ def read_events(base_dir: Path) -> list[dict[str, Any]]:
     )
 
 
-def test_end_to_end_with_scripted_backend_writes_structured_events(
-    recorded_video: Path, make_config_dir: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+def test_end_to_end_zone_crossing_is_persisted_logged_and_evidenced(
+    tmp_path: Path, make_config_dir: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config_dir = make_config_dir(**headless(recorded_video))
-    backend = FakeBackend(lambda _n: (PERSON,))
+    """Phase 1 acceptance flow through the real entry point (scripted detector, recorded video)."""
+    video = write_video(tmp_path / "walk.avi", frames=30)
+    config_dir = make_config_dir(**headless(video))
+    backend = FakeBackend(walker())
     monkeypatch.setattr(main_module, "load_backend", lambda *_a: backend)
 
     exit_code = main_module.main(["--config-dir", str(config_dir)])
 
-    events = read_events(config_dir.parent)
+    base_dir = config_dir.parent
+    logged = read_events(base_dir)
+    with sqlite3.connect(base_dir / "data" / "sentinela.db") as conn:
+        rows = conn.execute(
+            "SELECT event_id, event_type, track_id, zone_id, snapshot_path FROM events ORDER BY timestamp"
+        ).fetchall()
     assert exit_code == main_module.EXIT_OK
     assert backend.closed
-    assert len(events) == 1
-    assert events[0]["object"]["class"] == "person"
-    assert events[0]["processing"]["inference_backend"] == "fake-cpu"
-    assert events[0]["processing"]["model_id"] == "fake-model"
+    assert [(e["event_type"], e["object"]["track_id"], e["zone"]["zone_id"]) for e in logged] == [
+        ("zone_entry", "track-1", "zone-001"),
+        ("zone_exit", "track-1", "zone-001"),
+    ]
+    assert [row[0] for row in rows] == [e["event_id"] for e in logged]  # same events, stored first
+    snapshot = rows[0][4]
+    assert snapshot and (base_dir / "data" / snapshot).is_file()
+    assert logged[0]["evidence"] == {"snapshot_path": snapshot}
+    assert logged[0]["processing"]["inference_backend"] == "fake-cpu"
+
+
+def test_runtime_without_zones_warns_and_runs(
+    recorded_video: Path,
+    make_config_dir: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = headless(recorded_video)
+    config_dir = make_config_dir(node={**config["node"], "zones": []}, vision=config["vision"])
+    monkeypatch.setattr(main_module, "load_backend", lambda *_a: FakeBackend(walker()))
+    monkeypatch.setattr(main_module, "setup_logging", lambda *_a: None)  # keep caplog attached
+
+    with caplog.at_level("WARNING", logger="sentinela"):
+        assert main_module.main(["--config-dir", str(config_dir)]) == main_module.EXIT_OK
+
+    assert "No zones configured" in caplog.text
+
+
+def test_unwritable_event_store_exits_with_storage_error(
+    recorded_video: Path, make_config_dir: Callable[..., Path]
+) -> None:
+    config = headless(recorded_video)
+    config_dir = make_config_dir(node={**config["node"], "storage": {"data_dir": "blocked"}})
+    (config_dir.parent / "blocked").write_text("a file, not a directory")
+
+    assert main_module.main(["--config-dir", str(config_dir)]) == main_module.EXIT_STORAGE_ERROR
 
 
 def test_invalid_configuration_exits_with_config_error(make_config_dir: Callable[..., Path]) -> None:

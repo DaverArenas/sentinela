@@ -24,6 +24,25 @@ FIXTURE_SIZE = (96, 64)  # width, height
 PERSON = Detection(0, "person", 0.91, (10.0, 5.0, 40.0, 60.0))
 CAR = Detection(2, "car", 0.80, (50.0, 20.0, 90.0, 60.0))
 
+# Zone covering the right half of the frame (normalised coordinates).
+RIGHT_HALF = ((0.5, 0.0), (1.0, 0.0), (1.0, 1.0), (0.5, 1.0))
+
+
+def person_at(x1: float, width: float = 20.0, y1: float = 10.0, height: float = 40.0) -> Detection:
+    return Detection(0, "person", 0.9, (x1, y1, x1 + width, y1 + height))
+
+
+def walker(visible_frames: int = 20, step: float = 4.0) -> Callable[[int], Sequence[Detection]]:
+    """Scripted detections: a person walks left-to-right across a 96 px wide frame, then leaves.
+
+    Box centre x = 10 + step * n, so with step 4 it crosses into the right half (x >= 48) at n = 10.
+    """
+
+    def script(n: int) -> Sequence[Detection]:
+        return (person_at(step * n),) if n < visible_frames else ()
+
+    return script
+
 
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(base)

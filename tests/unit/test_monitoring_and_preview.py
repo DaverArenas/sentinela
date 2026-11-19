@@ -9,8 +9,10 @@ import pytest
 from sentinela_runtime.monitoring.metrics import PipelineMetrics, peak_rss_mib
 from sentinela_runtime.vision import visualization as viz
 from sentinela_runtime.vision.inference.base import Detection
+from sentinela_runtime.vision.tracking.base import TrackedObject
+from sentinela_runtime.vision.zones.zone_evaluator import Zone
 
-from support import PERSON
+from support import RIGHT_HALF
 
 
 def test_metrics_snapshot_aggregates_counters_and_latency() -> None:
@@ -39,15 +41,35 @@ def test_metrics_without_inference_report_no_latency() -> None:
     assert peak_rss_mib() > 0
 
 
-def test_annotate_frame_draws_on_a_copy_with_target_colors() -> None:
-    frame = np.zeros((80, 120, 3), dtype=np.uint8)
-    dog = Detection(16, "dog", 0.7, (60.0, 30.0, 110.0, 70.0))
+def test_annotate_frame_draws_zones_tracks_and_detections_on_a_copy() -> None:
+    frame = np.zeros((64, 96, 3), dtype=np.uint8)
+    zone = Zone("zone-001", "Restricted", RIGHT_HALF, frozenset({"person"}), "bottom_center")
+    inside = TrackedObject("track-1", Detection(0, "person", 0.9, (60.0, 20.0, 80.0, 50.0)), 3)
+    outside = TrackedObject("track-2", Detection(0, "person", 0.9, (5.0, 20.0, 25.0, 50.0)), 3)
+    dog = Detection(16, "dog", 0.7, (30.0, 52.0, 40.0, 60.0))
 
-    out = viz.annotate_frame(frame, [PERSON, dog], {"person"}, fps=12.3)
+    out = viz.annotate_frame(
+        frame,
+        detections=[dog],
+        tracks=[inside, outside],
+        zones=[zone],
+        occupancy={"zone-001": frozenset({"track-1"})},
+        fps=12.3,
+    )
 
     assert not frame.any()
-    assert tuple(out[60, 25]) == viz.COLOR_TARGET  # bottom edge of the person box
-    assert tuple(out[70, 85]) == viz.COLOR_OTHER  # bottom edge of the dog box
+    assert tuple(out[50, 70]) == viz.COLOR_ALERT  # bottom edge of the track inside the zone
+    assert tuple(out[50, 15]) == viz.COLOR_TRACK  # bottom edge of the track outside
+    assert tuple(out[60, 35]) == viz.COLOR_OTHER  # raw detection
+    assert tuple(out[63, 48]) == viz.COLOR_ALERT  # occupied zone outline (bottom-left corner)
+
+
+def test_annotate_frame_without_overlays_returns_an_equal_copy() -> None:
+    frame = np.full((8, 8, 3), 7, dtype=np.uint8)
+
+    out = viz.annotate_frame(frame)
+
+    assert out is not frame and np.array_equal(out, frame)
 
 
 def test_show_frame_degrades_to_headless_without_gui(monkeypatch: pytest.MonkeyPatch) -> None:

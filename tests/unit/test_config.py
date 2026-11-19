@@ -36,7 +36,12 @@ def test_repository_config_is_valid_and_matches_documented_defaults() -> None:
     assert config.node.camera.source == "0"
     assert config.vision.model.family == "yolox"
     assert config.vision.model.input_size == (640, 640)
-    assert config.vision.events.target_classes == ("person",)
+    assert config.vision.events.detection_event_classes == ()
+    assert config.vision.tracking.tracker == "iou"
+    assert [z.zone_id for z in config.node.zones] == ["zone-001"]
+    assert config.node.zones[0].polygon == ((0.5, 0.0), (1.0, 0.0), (1.0, 1.0), (0.5, 1.0))
+    assert config.database_path == REPO_ROOT / "data" / "sentinela.db"
+    assert config.node.storage.snapshots.event_types == ("zone_entry",)
     assert config.logging_config_path == REPO_CONFIG_DIR / "logging_config.yaml"
 
 
@@ -159,6 +164,11 @@ NODE_BASE: dict[str, Any] = {"node": {"node_id": "n"}, "camera": {"camera_id": "
         ("camera", {"open_timeout_ms": 0}, "open_timeout_ms"),
         ("camera", {"read_timeout_ms": 1.5}, "read_timeout_ms"),
         ("storage", {"data_dir": ""}, "storage.data_dir"),
+        ("storage", {"database_file": " "}, "storage.database_file"),
+        ("storage", {"snapshots": {"enabled": "yes"}}, "snapshots.enabled"),
+        ("storage", {"snapshots": {"event_types": ["intrusion"]}}, "snapshots.event_types"),
+        ("storage", {"snapshots": {"jpeg_quality": 101}}, "snapshots.jpeg_quality"),
+        ("storage", {"snapshots": {"min_free_disk_mb": -5}}, "snapshots.min_free_disk_mb"),
         ("monitoring", {"stats_interval_s": 0}, "monitoring.stats_interval_s"),
     ],
 )
@@ -184,8 +194,13 @@ def test_invalid_node_values_fail_validation(section: str, values: dict[str, Any
         ("inference", {"confidence_threshold": 0}, "confidence_threshold"),
         ("inference", {"nms_iou_threshold": 1.5}, "nms_iou_threshold"),
         ("sampling", {"inference_stride": 0}, "inference_stride"),
-        ("events", {"target_classes": []}, "target_classes"),
-        ("events", {"cooldown_s": -1}, "cooldown_s"),
+        ("tracking", {"tracker": "magic"}, "tracking.tracker"),
+        ("tracking", {"iou_threshold": 0}, "tracking.iou_threshold"),
+        ("tracking", {"min_hits": 0}, "tracking.min_hits"),
+        ("tracking", {"max_lost_frames": -1}, "tracking.max_lost_frames"),
+        ("events", {"detection_event_classes": [""]}, "detection_event_classes"),
+        ("events", {"zone_entry_frames": 0}, "zone_entry_frames"),
+        ("events", {"zone_exit_frames": 1.5}, "zone_exit_frames"),
         ("preview", {"enabled": "yes"}, "preview.enabled"),
     ],
 )
@@ -211,3 +226,61 @@ def test_unpinned_model_hash_is_allowed(make_config_dir: Callable[..., Path]) ->
 
     assert config.vision.model.sha256 is None
     assert isinstance(config.vision, VisionConfig)
+
+
+# --- zones ------------------------------------------------------------------------------------
+
+SQUARE = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+
+
+def zone(**overrides: Any) -> dict[str, Any]:
+    return {"zone_id": "zone-a", "name": "A", "polygon": SQUARE, **overrides}
+
+
+def load_zones(make_config_dir: Callable[..., Path], zones: Any) -> cfg.RuntimeConfig:
+    return load_runtime_config(make_config_dir(node={"zones": zones}))
+
+
+def test_zones_load_with_defaults_and_tuple_coordinates(make_config_dir: Callable[..., Path]) -> None:
+    config = load_zones(make_config_dir, [zone(), zone(zone_id="zone-b", anchor="center", classes=["car"])])
+
+    first, second = config.node.zones
+    assert first == cfg.ZoneConfig(
+        "zone-a", "A", tuple(tuple(v) for v in SQUARE), ("person",), "bottom_center"
+    )
+    assert (second.anchor, second.classes) == ("center", ("car",))
+
+
+def test_empty_zone_list_is_allowed(make_config_dir: Callable[..., Path]) -> None:
+    assert load_zones(make_config_dir, []).node.zones == ()
+
+
+@pytest.mark.parametrize(
+    ("zones", "message"),
+    [
+        (None, "zones must be a list"),
+        ([zone(), zone()], "duplicate zone_id"),
+        ([zone(name="")], "zone_id and name are required"),
+        ([zone(classes=[])], "classes must be a non-empty list"),
+        ([zone(anchor="head")], "anchor must be one of"),
+        ([zone(polygon=[[0.1, 0.1], [0.9, 0.1]])], "at least 3 vertices"),
+        ([zone(polygon=[[0.1, 0.1], [1.5, 0.1], [0.9, 0.9]])], "normalised to \\[0, 1\\]"),
+        ([zone(polygon=[[0.1, 0.1], [0.9], [0.9, 0.9]])], "list of \\[x, y\\] pairs"),
+        ([zone(polygon="square")], "list of \\[x, y\\] pairs"),
+        ([zone(polygon=[[0.1, 0.1], [0.5, 0.5], [0.9, 0.9]])], "area is"),
+        ([zone(polygon=[[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.9, 0.9]])], "repeats a vertex"),
+        ([zone(polygon=[[0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]])], "edges cross"),
+    ],
+)
+def test_invalid_zones_fail_validation(
+    make_config_dir: Callable[..., Path], zones: Any, message: str
+) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_zones(make_config_dir, zones)
+
+
+def test_zone_entries_must_be_mappings_with_required_keys(make_config_dir: Callable[..., Path]) -> None:
+    with pytest.raises(ConfigError, match=r"zones\[0\]' must be a mapping"):
+        load_zones(make_config_dir, ["zone-a"])
+    with pytest.raises(ConfigError, match=r"Missing required config key: zones\[0\].polygon"):
+        load_zones(make_config_dir, [{"zone_id": "z", "name": "Z"}])

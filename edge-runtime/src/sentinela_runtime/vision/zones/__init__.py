@@ -1,5 +1,5 @@
-"""Spatial / polygon zone evaluation (Phase 1, upcoming deliverable).
+"""Spatial evaluation: polygon zones from ``config/node_config.yaml`` and entry/exit detection.
 
-Will evaluate tracked objects against polygon zones loaded from config/node_config.yaml
-and report zone entry/exit transitions to the event engine.
+``geometry`` holds pure polygon math; ``zone_evaluator`` turns tracked objects into
+debounced zone transitions for the event engine.
 """

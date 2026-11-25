@@ -15,6 +15,13 @@
 3. **Configuration Over Hardcoding:** All thresholds, camera sources (webcam index vs. RTSP URL), MQTT topics, and restricted zone coordinates must be loaded from `config/node_config.yaml`.
 4. **Hardware Portability:** Keep hardware-specific inference backends abstracted behind a clean interface so the same application logic runs on x86 CUDA (RTX 3060), ARM64 TensorRT (Jetson), and HailoRT (Raspberry Pi AI HAT+).
 5. **Clean Decoupling:** Vision processing, MQTT sensor ingestion, and local SQLite persistence must run as modular, loosely coupled components within `edge-runtime/src/`.
+6. **Cascaded Wake-on-Event Inference:** For some applications, Tier-2 TinyML microcontrollers act as always-on, ultra-low-power sentinels (acoustic keyword/sound spotting, vibration/IMU anomaly detection, mmWave presence). Instead of running heavy video inference 24/7, the Peripheral Mesh wakes the Tier-1 Vision Runtime over MQTT only when a physical anomaly occurs. This greatly reduces power consumption, thermal load, and false positives. See README §2.7. Constraints:
+   - Opt-in per application through `config/node_config.yaml`. Continuous inference remains the default.
+   - The wake path is local only (local MQTT broker). Never put a cloud hop between trigger and activation.
+   - Fail open to vision: if the mesh, broker, or a sentinel heartbeat is lost, fall back to continuous or duty-cycled inference. Silence never means "all clear".
+   - Wake windows, cooldowns, and re-trigger limits are configurable and bounded. Vision events keep the triggering wake event ID as provenance.
+   - Keep wake control outside the vision pipeline stages. A wake controller pauses or resumes ingestion and inference, and no stage depends on MQTT directly.
+   - Implementation belongs to Phase 3. Phase 1 must not depend on it, but should not make design choices that prevent pausing and resuming the pipeline.
 
 ## 4. Coding Standards
 - Python 3.11+, strict type hints (`typing`), structured logging (`logging` module, not bare `print` statements in production modules), and clean docstrings.

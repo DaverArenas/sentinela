@@ -98,6 +98,25 @@ Avoid hardcoding operational parameters.
 - Auditable configuration and deployment changes.
 - Safe defaults and manual overrides for physical actuators.
 
+### 2.7 Cascaded Wake-on-Event Inference
+
+Some applications use a cascade architecture. Tier-2 TinyML microcontrollers act as always-on, ultra-low-power sentinels: acoustic keyword or sound spotting, vibration/IMU anomaly detection, and mmWave presence. Running heavy video inference 24/7 uses a lot of compute. In cascaded mode the Peripheral Mesh instead wakes the Tier-1 Vision Runtime over MQTT only when a physical anomaly occurs. This greatly reduces power consumption, thermal load, and false positives.
+
+| Tier | Role | Hardware | Duty cycle |
+|---|---|---|---|
+| Tier-1 — Vision Runtime | Heavy perception: detection, tracking, zones, events, evidence | Edge computer (RTX 3060, Jetson, Raspberry Pi + Hailo) | On demand when cascaded, continuous otherwise |
+| Tier-2 — Peripheral Mesh | Always-on anomaly sentinels using TinyML | ESP32 / TinyML microcontrollers, mmWave and IMU sensors | Always on, ultra-low power |
+
+Guardrails:
+
+- **Opt-in per application.** Continuous inference remains the default. Cascaded mode is enabled in `config/node_config.yaml` only for applications that benefit from it.
+- **Local wake path.** Wake signals travel over the local MQTT broker. A cloud service must never sit between a Tier-2 trigger and Tier-1 activation.
+- **Silence is not "all clear".** If the mesh or broker becomes unreachable, or a sentinel misses its heartbeat, the Vision Runtime falls back to continuous or duty-cycled inference. A missing wake signal must never be treated as the absence of a threat.
+- **Bounded wake windows.** Wake duration, cooldown, and re-trigger limits are configurable. This prevents wake storms and runaway power use.
+- **Wake latency is budgeted.** The time from a Tier-2 trigger to the first Tier-1 inference must be measured. The idle state is configurable (for example camera streaming with inference paused, or a warm model with the camera idle) to trade power against responsiveness.
+- **Provenance is preserved.** Wake triggers are structured events. Vision events generated during a wake window reference the triggering wake event ID.
+- **Not safety-certified.** As with vision detections, TinyML triggers are probabilistic signals, not safety-certified inputs.
+
 ---
 
 # 3. System Architecture
@@ -210,6 +229,8 @@ Supported and planned technologies:
 - MQTT, Wi-Fi, serial, and supported hardware interfaces.
 
 Peripheral devices are not necessarily edge computers. They can collect measurements, perform lightweight local inference, and execute authorized physical actions.
+
+In cascaded deployments (see [2.7](#27-cascaded-wake-on-event-inference)) this layer forms the **Tier-2 Peripheral Mesh**. Its TinyML sentinels publish wake events over local MQTT to activate the Tier-1 Vision Runtime on demand.
 
 ---
 
@@ -347,6 +368,7 @@ Responsibilities:
 - Connection monitoring.
 - Automatic reconnect.
 - Frame-rate and resolution configuration.
+- Wake-on-event activation for cascaded deployments (Phase 3+). Ingestion and inference can be paused or resumed by a local wake controller without changing the downstream pipeline stages.
 
 ## 5.2 Preprocessing
 
@@ -692,6 +714,7 @@ The event architecture must support:
 - Event deduplication.
 - Optional sensor observations.
 - Evidence references.
+- Wake-event provenance for cascaded deployments. Events produced during a wake window carry the ID of the Tier-2 trigger that activated the Vision Runtime.
 
 ---
 
@@ -763,6 +786,8 @@ Deliverables:
 - Sensor state management.
 - Event correlation.
 - Controlled actuator integration.
+- Cascaded wake-on-event inference: TinyML sentinels (acoustic, vibration/IMU, mmWave) waking the Vision Runtime over local MQTT, with heartbeat-based fallback to continuous inference.
+- Power, thermal, wake-latency, and false-positive measurements comparing cascaded and continuous modes.
 
 ## Phase 4 — Runtime and Containerization
 
